@@ -2,7 +2,7 @@
 Amiibo Emulation for 3ds over network.
 
 ## How To Use
- * Put the `0004013020004002` folder in `luma/titles/`
+ * Put the `0004013000004002` folder in `luma/titles/`
  
  * Enable Title patching from luma menu
  
