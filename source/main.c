@@ -79,6 +79,7 @@ typedef struct
 {
     u8 *buf;
     MyThread thread;
+    MyThread hidthread;
     char done;
     char connected;
 } sockThreadStruct;
@@ -118,6 +119,11 @@ void sockrwThread(void *arg)
         }
     }
 
+    MyThread_Exit();
+}
+
+void hidThread()
+{
     while(1)
     {
         u32 key = waitInput();
@@ -126,8 +132,10 @@ void sockrwThread(void *arg)
             if(events[1] != -1)
                 svcSignalEvent(events[1]);
             tag_state = NFC_TagState_OutOfRange;
+            break;
         }
     }
+
     MyThread_Exit();
 }
 
@@ -140,11 +148,75 @@ void sockSendRecvData(sockThreadStruct *data, u32 *cmdbuf)
     memcpy((u8*)&cmdbuf[0], &data->buf[0], 256);           
 }
 
+/*
+char* GetCommandName(u16 cmdid)
+{
+    static char *cmdstr;
+
+    switch (cmdid) {
+		case 0x0001: cmdstr = "Initialize"; break;
+		case 0x0002: cmdstr = "Shutdown"; break;
+		case 0x0003: cmdstr = "StartCommunication"; break;
+		case 0x0004: cmdstr = "StopCommunication"; break;
+		case 0x0005: cmdstr = "StartTagScanning"; break;
+		case 0x0006: cmdstr = "StopTagScanning"; break;
+		case 0x0007: cmdstr = "LoadAmiiboData"; break;
+		case 0x0008: cmdstr = "ResetTagScanState"; break;
+		case 0x0009: cmdstr = "UpdateStoredAmiiboData"; break;
+		case 0x000B: cmdstr = "GetTagInRangeEvent"; break;
+		case 0x000C: cmdstr = "GetTagOutOfRangeEvent"; break;
+		case 0x000D: cmdstr = "GetTagState"; break;
+		case 0x000F: cmdstr = "CommunicationGetStatus"; break;
+		case 0x0010: cmdstr = "GetTagInfo2"; break;
+		case 0x0011: cmdstr = "GetTagInfo"; break;
+		case 0x0012: cmdstr = "CommunicationGetResult"; break;
+		case 0x0013: cmdstr = "OpenAppData"; break;
+		case 0x0014: cmdstr = "InitializeWriteAppData"; break;
+		case 0x0015: cmdstr = "ReadAppData"; break;
+		case 0x0016: cmdstr = "WriteAppData"; break;
+		case 0x0017: cmdstr = "GetAmiiboSettings"; break;
+		case 0x0018: cmdstr = "GetAmiiboConfig"; break;
+		case 0x0019: cmdstr = "GetAppDataInitStruct"; break;
+        case 0x001A: cmdstr = "MountRomData"; break;
+        case 0x001B: cmdstr = "GetAmiiboIdentificationBlock"; break;
+		case 0x001F: cmdstr = "StartOtherTagScanning"; break;
+		case 0x0020: cmdstr = "SendTagCommand"; break;
+		case 0x0021: cmdstr = "Cmd21"; break;
+		case 0x0022: cmdstr = "Cmd22"; break;
+        case 0x401: cmdstr = "Reset"; break;
+        case 0x402: cmdstr = "GetAppDataConfig"; break;
+        case 0x407: cmdstr = "IsAppdatInited called"; break; 
+		case 0x0404: cmdstr = "SetAmiiboSettings"; break;
+        default:
+            cmdstr = "Unknown Command called"; break;
+	}
+    return cmdstr;
+}
+
+int no_of_cmdbuf_to_dump(int cmdid)
+{
+    int n = 2;
+    switch(cmdid)
+    {
+        case 0x5: n += 0; break;
+        case 0x6: n += 0; break;
+        case 0xD: n += 1; break;
+        case 0x11: n += 12; break;
+        case 0x7: n += 0; break;
+        case 0x17: n+= 0x2B; break;
+        case 0x18: n += 17; break;
+        case 0x13: n += 0; break;
+        case 0x15: n += (0xD8/4) + 1; break;
+    }
+    return n;
+}
+
+*/
 void handle_commands(sockThreadStruct *data)
 {
     u32 *cmdbuf = getThreadCommandBuffer();
     u16 cmdid = cmdbuf[0] >> 16;
-   // printf("Cmdid %x called\n", cmdid);
+   // printf("Command %s (0x%x) called\n", GetCommandName(cmdid), cmdbuf[0]);
     //This is a bare-minimum ipc-handler for some critical funcs to ensure that stuff isn't broken when 
     //the companion isn't connected
     switch(cmdid)
@@ -189,6 +261,7 @@ void handle_commands(sockThreadStruct *data)
 
         case 5:
         {
+            if(data->connected) svcSignalEvent(events[0]);
             tag_state = NFC_TagState_Scanning;
             sockSendRecvData(data, cmdbuf);
             break;
@@ -196,15 +269,19 @@ void handle_commands(sockThreadStruct *data)
 
         case 6:
         {
-            if(events[1] != -1)
-                 svcSignalEvent(events[1]);
+            if(data->hidthread.handle != -1) 
+            {
+                MyThread_Join(&data->hidthread, 1e+9);
+                data->hidthread.handle = -1;
+            }
+            svcSignalEvent(events[1]);
             sockSendRecvData(data, cmdbuf);
             break;
         }
 
         case 0xB: //GetTagInRangeEvent
         {
-            svcCreateEvent(&events[0], RESET_ONESHOT);
+            sockSendRecvData(data, cmdbuf);
             cmdbuf[0] = IPC_MakeHeader(cmdid, 1, 2);
             cmdbuf[1] = 0;
             cmdbuf[2] = 0;
@@ -214,7 +291,9 @@ void handle_commands(sockThreadStruct *data)
 
         case 0xC: //GetTagOutOfRangeEvent
         {
-            svcCreateEvent(&events[1], RESET_ONESHOT);
+            if(data->hidthread.handle == -1)
+                MyThread_Create(&data->hidthread, &hidThread, (void*)data, threadStack, 0x1000, 15, -2);
+            sockSendRecvData(data, cmdbuf);
             cmdbuf[0] = IPC_MakeHeader(cmdid, 1, 2);
             cmdbuf[1] = 0;
             cmdbuf[2] = 0;
@@ -329,6 +408,7 @@ int main() {
 
     u8 buf[256];
     thread_data.buf = buf;
+    thread_data.hidthread.handle = -1;
 
     Result ret = 0;
     if (R_FAILED(srvRegisterService(hndNfuU, "nfc:u", MAX_SESSIONS))) {
@@ -340,6 +420,9 @@ int main() {
     if (R_FAILED(srvEnableNotification(hndNotification))) {
         svcBreak(USERBREAK_ASSERT);
     }
+
+    svcCreateEvent(&events[0], RESET_ONESHOT);
+    svcCreateEvent(&events[1], RESET_ONESHOT);
     
     struct sockaddr_in servaddr;
     sockfd = socSocket(AF_INET, SOCK_STREAM, 0);

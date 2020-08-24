@@ -28,7 +28,7 @@ OUTPUTDIR   :=  0004013000004002
 #---------------------------------------------------------------------------------
 ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
-CFLAGS	:= -flto -Wall -Os -mword-relocations \
+CFLAGS	:=  -flto -Wall -Os -mword-relocations \
 			-fomit-frame-pointer -ffunction-sections -fdata-sections \
 			-Werror=implicit-function-declaration \
 			$(ARCH)
